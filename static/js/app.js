@@ -14,6 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
   initHealth();
   loadRecords();
   initEventListeners();
+  setupScaleButtons();
 });
 
 async function initHealth() {
@@ -319,49 +320,209 @@ function resetArenaResults() {
   document.getElementById("run-status-indicator").textContent = "Ready to execute";
 }
 
-async function runBatchBenchmark(limit = 25) {
+let selectedBatchScale = 50;
+
+function setupScaleButtons() {
+  document.querySelectorAll(".scale-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".scale-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      selectedBatchScale = parseInt(btn.getAttribute("data-scale")) || 50;
+      const btnText = document.getElementById("batch-btn-text");
+      if (btnText) {
+        btnText.textContent = `START BATCH RUN (${selectedBatchScale >= 1000 ? (selectedBatchScale/1000)+'k' : selectedBatchScale})`;
+      }
+    });
+  });
+}
+
+function appendHudLine(text, type = "info") {
+  const hudBody = document.getElementById("hud-body");
+  if (!hudBody) return;
+  const line = document.createElement("div");
+  line.className = `hud-line ${type}`;
+  line.textContent = text;
+  hudBody.appendChild(line);
+  hudBody.scrollTop = hudBody.scrollHeight;
+}
+
+function animateNumber(elementId, targetValue, duration = 700, suffix = " ms") {
+  const el = document.getElementById(elementId);
+  if (!el || targetValue == null) return;
+  const start = 0;
+  const startTime = performance.now();
+  
+  function update(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const ease = 1 - Math.pow(1 - progress, 3);
+    const current = (start + (targetValue - start) * ease).toFixed(1);
+    el.textContent = `${current}${suffix}`;
+    if (progress < 1) {
+      requestAnimationFrame(update);
+    } else {
+      el.textContent = `${targetValue}${suffix}`;
+    }
+  }
+  requestAnimationFrame(update);
+}
+
+function setSkeletonState(active) {
+  const fields = [
+    "laya-p50", "laya-p95", "laya-p99", "laya-mean",
+    "jev-p50", "jev-p95", "jev-p99", "jev-mean",
+    "batch-consensus-rate"
+  ];
+  fields.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      if (active) {
+        el.classList.add("skeleton-shimmer");
+        el.textContent = "--";
+      } else {
+        el.classList.remove("skeleton-shimmer");
+      }
+    }
+  });
+}
+
+function runBatchBenchmark(limit = null) {
+  const scale = limit || selectedBatchScale || 50;
   const filterSelect = document.getElementById("batch-filter-select");
   const filterVal = filterSelect ? filterSelect.value : "all";
 
+  const submitBtn = document.getElementById("btn-run-batch-main");
+  const spinner = document.getElementById("batch-btn-spinner");
+  const btnText = document.getElementById("batch-btn-text");
+
+  // 1. Button Transition
+  if (submitBtn) submitBtn.disabled = true;
+  if (spinner) spinner.style.display = "inline-block";
+  if (btnText) btnText.textContent = `Processing ${scale} Records in Parallel...`;
+
+  // 2. Reset Victory Glows
+  const cardLaya = document.getElementById("percentile-card-laya");
+  const cardJev = document.getElementById("percentile-card-jev");
+  if (cardLaya) cardLaya.classList.remove("victory-glow-laya");
+  if (cardJev) cardJev.classList.remove("victory-glow-jev");
+
+  const tagLaya = document.getElementById("tag-laya-winner");
+  const tagJev = document.getElementById("tag-jev-winner");
+  if (tagLaya) { tagLaya.textContent = "LOCAL IPC"; tagLaya.className = "type-tag normal"; }
+  if (tagJev) { tagJev.textContent = "CLOUD API"; tagJev.className = "type-tag"; }
+
+  // 3. Skeleton Shimmer
+  setSkeletonState(true);
+
+  // 4. Reveal Progress & Terminal HUD
   const progress = document.getElementById("batch-progress");
-  progress.style.display = "block";
-  document.querySelector(".batch-section").scrollIntoView({ behavior: "smooth" });
+  const progressFill = document.getElementById("batch-progress-fill");
+  const progressPct = document.getElementById("batch-progress-pct");
+  const hud = document.getElementById("terminal-hud");
+  const hudBody = document.getElementById("hud-body");
 
-  try {
-    const res = await fetch("/api/benchmark/batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        limit: limit,
-        filter_type: filterVal,
-        concurrency: 5
-      })
-    });
+  if (progress) progress.style.display = "block";
+  if (progressFill) progressFill.style.width = "0%";
+  if (progressPct) progressPct.textContent = "0%";
+  if (hud) hud.style.display = "block";
+  if (hudBody) hudBody.innerHTML = "";
 
-    if (!res.ok) throw new Error("Batch benchmark request failed");
-    const data = await res.json();
+  document.getElementById("batch-section").scrollIntoView({ behavior: "smooth" });
 
-    const layaDist = data.distributions?.laya_latency || {};
-    const jevDist = data.distributions?.jev_latency || {};
+  appendHudLine(`[INFO] Initializing SSE telemetry stream for ${scale} records (Filter: ${filterVal})...`, "info");
 
-    document.getElementById("laya-p50").textContent = `${layaDist.p50 || 0} ms`;
-    document.getElementById("laya-p95").textContent = `${layaDist.p95 || 0} ms`;
-    document.getElementById("laya-p99").textContent = `${layaDist.p99 || 0} ms`;
-    document.getElementById("laya-mean").textContent = `${layaDist.mean || 0} ms`;
+  // 5. Connect SSE Stream
+  const sseUrl = `/api/benchmark/batch/stream?limit=${scale}&filter=${filterVal}&concurrency=5`;
+  const eventSource = new EventSource(sseUrl);
 
-    document.getElementById("jev-p50").textContent = `${jevDist.p50 || 0} ms`;
-    document.getElementById("jev-p95").textContent = `${jevDist.p95 || 0} ms`;
-    document.getElementById("jev-p99").textContent = `${jevDist.p99 || 0} ms`;
-    document.getElementById("jev-mean").textContent = `${jevDist.mean || 0} ms`;
+  eventSource.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
 
-    document.getElementById("batch-consensus-rate").textContent = `${data.consensus_rate_percent}%`;
-    document.getElementById("batch-stats-summary").textContent = `Evaluated ${data.total_evaluated} records (${data.valid_comparisons} valid comparisons)`;
+      if (data.type === "log") {
+        let lineType = "info";
+        if (data.text.includes("[EXEC]")) lineType = "exec";
+        if (data.text.includes("[DONE]")) lineType = "done";
+        if (data.text.includes("[ERROR]")) lineType = "error";
+        appendHudLine(data.text, lineType);
+      } 
+      else if (data.type === "progress") {
+        if (progressFill) progressFill.style.width = `${data.percent}%`;
+        if (progressPct) progressPct.textContent = `${data.percent}%`;
+        appendHudLine(data.text, "stream");
+      } 
+      else if (data.type === "done") {
+        if (progressFill) progressFill.style.width = "100%";
+        if (progressPct) progressPct.textContent = "100%";
+        appendHudLine(data.text, "done");
 
-  } catch (err) {
-    alert("Batch benchmark error: " + err.message);
-  } finally {
-    progress.style.display = "none";
-  }
+        const m = data.metrics || {};
+        const layaDist = m.laya_latency || {};
+        const jevDist = m.jev_latency || {};
+
+        // Remove Skeletons & Animate Numbers
+        setSkeletonState(false);
+
+        animateNumber("laya-p50", layaDist.p50, 700, " ms");
+        animateNumber("laya-p95", layaDist.p95, 750, " ms");
+        animateNumber("laya-p99", layaDist.p99, 800, " ms");
+        animateNumber("laya-mean", layaDist.mean, 700, " ms");
+
+        animateNumber("jev-p50", jevDist.p50, 700, " ms");
+        animateNumber("jev-p95", jevDist.p95, 750, " ms");
+        animateNumber("jev-p99", jevDist.p99, 800, " ms");
+        animateNumber("jev-mean", jevDist.mean, 700, " ms");
+
+        animateNumber("batch-consensus-rate", m.consensus_rate_percent, 900, "%");
+
+        document.getElementById("batch-stats-summary").textContent = 
+          `Completed ${m.total_evaluated} evaluations. Faster engine: ${m.faster_winner?.toUpperCase()} (Winner Reveal).`;
+
+        // Victory Glow & Reveal
+        if (m.faster_winner === "laya") {
+          if (cardLaya) cardLaya.classList.add("victory-glow-laya");
+          if (tagLaya) {
+            tagLaya.textContent = "★ VICTORY: FASTEST";
+            tagLaya.style.backgroundColor = "var(--color-primary)";
+            tagLaya.style.color = "var(--color-on-primary)";
+          }
+        } else if (m.faster_winner === "jev") {
+          if (cardJev) cardJev.classList.add("victory-glow-jev");
+          if (tagJev) {
+            tagJev.textContent = "★ VICTORY: FASTEST";
+            tagJev.style.backgroundColor = "#0046a4";
+            tagJev.style.color = "#ffffff";
+          }
+        }
+
+        // Reset submit button
+        if (submitBtn) submitBtn.disabled = false;
+        if (spinner) spinner.style.display = "none";
+        if (btnText) btnText.textContent = `START BATCH RUN (${scale >= 1000 ? (scale/1000)+'k' : scale})`;
+
+        eventSource.close();
+      }
+      else if (data.type === "error") {
+        appendHudLine(data.text, "error");
+        setSkeletonState(false);
+        if (submitBtn) submitBtn.disabled = false;
+        if (spinner) spinner.style.display = "none";
+        if (btnText) btnText.textContent = `START BATCH RUN (${scale})`;
+        eventSource.close();
+      }
+    } catch (err) {
+      console.warn("SSE parse error:", err);
+    }
+  };
+
+  eventSource.onerror = (err) => {
+    appendHudLine("[WARN] Stream disconnected or completed.", "info");
+    setSkeletonState(false);
+    if (submitBtn) submitBtn.disabled = false;
+    if (spinner) spinner.style.display = "none";
+    if (btnText) btnText.textContent = `START BATCH RUN (${scale})`;
+    eventSource.close();
+  };
 }
 
 function escapeHtml(str) {

@@ -45,3 +45,9 @@ The platform consists of a three-tier asynchronous architecture:
 2. **Server-Side Key Injection**: Outbound client calls inject the authorization header inside FastAPI using environment variables (`TYPESAFE_API_KEY`).
 3. **Payload Sanitization**: Incoming user prompts are truncated to 4,000 characters and stripped of null bytes prior to execution.
 4. **CORS Isolation**: CORS is locked strictly to explicit local and deployed origins.
+
+## 3. Interactive Architecture Diagram (Archify)
+- **Specification**: [`docs/architecture.archify.json`](file:///d:/Jevastating/docs/architecture.archify.json)
+- **Interactive Standalone Diagram**: [`docs/architecture.html`](file:///d:/Jevastating/docs/architecture.html)
+- **Live Local Access**: `http://localhost:8000/architecture.html` and `http://localhost:8001/architecture.html`
+- **Validation**: Compiled via Archify `showcase` quality profile (`9/9` structural checks passed, 0 errors, 0 warnings). Includes light/dark theme switcher, trace animation, guided focus views, and zero-dependency inline SVG.

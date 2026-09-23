@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Dual Guardrail Arena Architecture",
+    "subtitle": "Local Laya (ModernBERT) vs TypeSafe AI Cloud (Jev) System-1 Evaluation",
+    "output": "architecture.html",
+    "visual_preset": "signal-flow",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "system-overview",
+        "label": "Full Guardrail Pipeline",
+        "focus": ["client_ui", "flight_gateway", "railway_gateway", "fanout_dispatcher", "laya_engine", "typesafe_cloud", "telemetry_hud"],
+        "note": "Dual-arena architecture comparing local ModernBERT System-1 with cloud TypeSafe JEV-1.13."
+      },
+      {
+        "id": "inference-split",
+        "label": "Local vs Cloud System-1",
+        "focus": ["fanout_dispatcher", "laya_engine", "typesafe_cloud"],
+        "note": "AsyncIO fans out requests in parallel to local IPC (<40ms) and cloud HTTPS (~500ms)."
+      },
+      {
+        "id": "data-and-storage",
+        "label": "Polars Parquet Ingestion",
+        "focus": ["flight_gateway", "railway_gateway", "flight_parquet", "railway_parquet"],
+        "note": "High-throughput binary columnar storage with zero-copy projection pushdown."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "client_ui",
+      "type": "frontend",
+      "label": "Web Arena UI",
+      "sublabel": "Ports :8000 & :8001",
+      "tag": "Zero-Key Client",
+      "pos": [40, 240],
+      "size": [140, 60]
+    },
+    {
+      "id": "flight_gateway",
+      "type": "backend",
+      "label": "Flight Gateway",
+      "sublabel": "FastAPI :8000",
+      "brand": "fastapi",
+      "tag": "Air Dialogue",
+      "pos": [260, 130],
+      "size": [140, 60]
+    },
+    {
+      "id": "railway_gateway",
+      "type": "backend",
+      "label": "Railway Gateway",
+      "sublabel": "FastAPI :8001",
+      "brand": "fastapi",
+      "tag": "IRCTC 30k PNR",
+      "pos": [260, 350],
+      "size": [140, 60]
+    },
+    {
+      "id": "flight_parquet",
+      "type": "database",
+      "label": "Flight Parquet",
+      "sublabel": "Air Dialogue Metadata",
+      "tag": "320 Records",
+      "pos": [480, 40],
+      "size": [140, 56]
+    },
+    {
+      "id": "fanout_dispatcher",
+      "type": "backend",
+      "label": "AsyncIO Dispatcher",
+      "sublabel": "asyncio.gather()",
+      "brand": "python",
+      "tag": "Parallel Fan-Out",
+      "pos": [480, 240],
+      "size": [140, 60]
+    },
+    {
+      "id": "railway_parquet",
+      "type": "database",
+      "label": "Railway Parquet",
+      "sublabel": "IRCTC 30k Records",
+      "tag": "Polars Pushdown",
+      "pos": [480, 440],
+      "size": [140, 56]
+    },
+    {
+      "id": "laya_engine",
+      "type": "backend",
+      "label": "Laya Engine",
+      "sublabel": "ModernBERT (<40ms)",
+      "brand": "hugging-face",
+      "tag": "Local System-1",
+      "pos": [700, 130],
+      "size": [144, 60]
+    },
+    {
+      "id": "typesafe_cloud",
+      "type": "cloud",
+      "label": "TypeSafe AI (Jev)",
+      "sublabel": "Cloud API (~500ms)",
+      "tag": "Remote System-1",
+      "pos": [700, 350],
+      "size": [144, 60]
+    },
+    {
+      "id": "telemetry_hud",
+      "type": "backend",
+      "label": "Consensus Telemetry",
+      "sublabel": "SSE Streamer",
+      "tag": "p50/p95/p99 & Stats",
+      "pos": [920, 240],
+      "size": [150, 60]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "On-Premises Workstation Node (Local Python Runtime)",
+      "wraps": ["flight_gateway", "railway_gateway", "flight_parquet", "railway_parquet", "fanout_dispatcher", "laya_engine", "telemetry_hud"],
+      "pad": 20
+    },
+    {
+      "kind": "region",
+      "label": "TypeSafe Cloud Network (Remote)",
+      "wraps": ["typesafe_cloud"],
+      "pad": 20
+    },
+    {
+      "kind": "security-group",
+      "label": "Presentation Layer (Zero-Credential Boundary)",
+      "wraps": ["client_ui"],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "id": "ui-to-flight",
+      "from": "client_ui",
+      "to": "flight_gateway",
+      "label": "Port :8000",
+      "variant": "emphasis"
+    },
+    {
+      "id": "ui-to-railway",
+      "from": "client_ui",
+      "to": "railway_gateway",
+      "label": "Port :8001",
+      "variant": "emphasis"
+    },
+    {
+      "id": "flight-to-data",
+      "from": "flight_gateway",
+      "to": "flight_parquet",
+      "label": "read",
+      "variant": "dashed"
+    },
+    {
+      "id": "railway-to-data",
+      "from": "railway_gateway",
+      "to": "railway_parquet",
+      "label": "pushdown",
+      "variant": "dashed"
+    },
+    {
+      "id": "flight-to-dispatch",
+      "from": "flight_gateway",
+      "to": "fanout_dispatcher",
+      "label": "evaluate"
+    },
+    {
+      "id": "railway-to-dispatch",
+      "from": "railway_gateway",
+      "to": "fanout_dispatcher",
+      "label": "evaluate"
+    },
+    {
+      "id": "dispatch-to-laya",
+      "from": "fanout_dispatcher",
+      "to": "laya_engine",
+      "label": "IPC (<40ms)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "dispatch-to-typesafe",
+      "from": "fanout_dispatcher",
+      "to": "typesafe_cloud",
+      "label": "TLS (~500ms)",
+      "variant": "security"
+    },
+    {
+      "id": "laya-to-telemetry",
+      "from": "laya_engine",
+      "to": "telemetry_hud",
+      "label": "scores"
+    },
+    {
+      "id": "typesafe-to-telemetry",
+      "from": "typesafe_cloud",
+      "to": "telemetry_hud",
+      "label": "scores"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Dual-Domain Gateways",
+      "items": [
+        "Flight Arena (:8000) evaluates Air Dialogue conversation metadata",
+        "Railway Arena (:8001) scales to 30,000 PNR reservation transactions",
+        "Both backends expose non-blocking SSE streaming endpoints"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "System-1 Decision Latency",
+      "items": [
+        "Laya ModernBERT executes via local IPC in sub-40ms (~20-35ms)",
+        "TypeSafe AI Jev executes via cloud HTTPS in ~450-550ms",
+        "Consensus telemetry tracks Quota, Tatkal Risk, and Score agreement"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Security & Zero-Exposure Policy",
+      "items": [
+        "Zero client API keys: Upstream credentials stay in server .env",
+        "4,000 character prompt truncation & null-byte stripping",
+        "CORS isolation and sibling worktree isolation"
+      ]
+    }
+  ]
+}
