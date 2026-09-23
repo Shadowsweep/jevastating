@@ -240,6 +240,16 @@ async def benchmark_batch(req: BatchBenchmarkRequest):
                 
     consensus_rate = round((consensus_count / valid_comparisons * 100), 2) if valid_comparisons > 0 else 0.0
     
+    return {
+        "total_evaluated": len(results),
+        "valid_comparisons": valid_comparisons,
+        "consensus_rate_percent": consensus_rate,
+        "distributions": {
+            "laya_latency": calc_percentiles(laya_latencies),
+            "jev_latency": calc_percentiles(jev_latencies)
+        }
+    }
+
 @app.get("/api/benchmark/batch/stream")
 async def benchmark_batch_stream(
     limit: int = Query(50, ge=1, le=1000),
