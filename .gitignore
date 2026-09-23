@@ -1,0 +1,20 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Datasets & Weights
+data/*.parquet
+*.parquet
+*.csv
+data/*.csv
+weights/
+*.bin
+*.onnx
+
+# Python Cache & Virtual Environments
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
