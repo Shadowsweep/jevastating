@@ -1,14 +1,13 @@
 /**
- * Guardrail Arena Frontend Logic
- * Strictly adheres to RULES.md and DESIGN.md:
- * - Independent client RTT vs backend compute latency measurement
- * - Fail-safe visual states on engine errors
- * - Zero credential fields on client
+ * Railway Guardrail Arena Frontend Logic (Port 8001)
+ * Adheres strictly to RULES.md and DESIGN.md:
+ * - Independent client RTT vs backend compute latency
+ * - Four guardrail decision vectors (Quota Noul, Tatkal Choice, Waitlist Score, Injection Noul)
+ * - Zero client credentials
  */
 
 let currentPage = 0;
 const pageSize = 15;
-let currentFilter = "all";
 
 document.addEventListener("DOMContentLoaded", () => {
   initHealth();
@@ -19,7 +18,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 async function initHealth() {
   try {
-    const res = await fetch("/api/health");
+    const res = await fetch("/api/railway/health");
     if (!res.ok) return;
     const data = await res.json();
     
@@ -27,10 +26,10 @@ async function initHealth() {
       document.getElementById("laya-health-txt").textContent = "LOCAL (<40MS) ONLINE";
     }
     if (data.engines?.jev?.status === "online") {
-      document.getElementById("jev-health-txt").textContent = "CLOUD (ONLINE)";
+      document.getElementById("jev-health-txt").textContent = "CLOUD (SYSTEM-1)";
     }
     if (data.dataset?.total_records) {
-      document.getElementById("stat-total-records").textContent = data.dataset.total_records;
+      document.getElementById("stat-total-records").textContent = Number(data.dataset.total_records).toLocaleString();
     }
   } catch (err) {
     console.warn("Health check error:", err);
@@ -38,35 +37,23 @@ async function initHealth() {
 }
 
 function initEventListeners() {
-  // Input counter
   const promptInput = document.getElementById("prompt-input");
-  const charCounter = document.getElementById("char-counter");
-  promptInput.addEventListener("input", () => {
-    const len = promptInput.value.length;
-    charCounter.textContent = `${len} / 4000`;
-    if (len > 4000) {
-      charCounter.style.color = "var(--color-error)";
-    } else {
-      charCounter.style.color = "var(--color-mute)";
-    }
-  });
 
   // Template chips
   document.querySelectorAll(".template-chip").forEach(chip => {
     chip.addEventListener("click", () => {
       promptInput.value = chip.getAttribute("data-text");
-      promptInput.dispatchEvent(new Event("input"));
+      document.getElementById("active-pnr-label").textContent = "CUSTOM / TEMPLATE PAYLOAD";
       document.getElementById("arena-workbench").scrollIntoView({ behavior: "smooth" });
     });
   });
 
   // Execute single benchmark
-  document.getElementById("btn-run-single").addEventListener("click", runSingleBenchmark);
+  document.getElementById("btn-run-single").addEventListener("click", () => runSingleBenchmark());
 
   // Clear arena
   document.getElementById("btn-clear-arena").addEventListener("click", () => {
     promptInput.value = "";
-    promptInput.dispatchEvent(new Event("input"));
     resetArenaResults();
   });
 
@@ -83,15 +70,18 @@ function initEventListeners() {
     runBatchBenchmark(30);
   });
 
-  // Dataset filter tabs
-  document.querySelectorAll(".tab-row .pill-tab").forEach(tab => {
-    tab.addEventListener("click", () => {
-      document.querySelectorAll(".tab-row .pill-tab").forEach(t => t.classList.remove("active"));
-      tab.classList.add("active");
-      currentFilter = tab.getAttribute("data-filter");
-      currentPage = 0;
-      loadRecords();
-    });
+  // Filters
+  document.getElementById("filter-quota-select").addEventListener("change", () => {
+    currentPage = 0;
+    loadRecords();
+  });
+  document.getElementById("filter-channel-select").addEventListener("change", () => {
+    currentPage = 0;
+    loadRecords();
+  });
+  document.getElementById("filter-injection-select").addEventListener("change", () => {
+    currentPage = 0;
+    loadRecords();
   });
 
   // Pagination buttons
@@ -109,11 +99,15 @@ function initEventListeners() {
 
 async function loadRecords() {
   const tbody = document.getElementById("records-table-body");
-  tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 24px; color:var(--color-mute);">Loading parquet records...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding: 24px; color:var(--color-mute);">Loading 30,000 transaction records...</td></tr>`;
+
+  const quota = document.getElementById("filter-quota-select").value;
+  const channel = document.getElementById("filter-channel-select").value;
+  const injection = document.getElementById("filter-injection-select").value;
 
   try {
-    const res = await fetch(`/api/records?page=${currentPage}&limit=${pageSize}&filter=${currentFilter}`);
-    if (!res.ok) throw new Error("Failed to fetch records");
+    const res = await fetch(`/api/railway/records?page=${currentPage}&limit=${pageSize}&quota=${quota}&channel=${channel}&injection=${injection}`);
+    if (!res.ok) throw new Error("Failed to fetch railway records");
     const data = await res.json();
 
     const records = data.records || [];
@@ -121,40 +115,37 @@ async function loadRecords() {
 
     const startIdx = currentPage * pageSize + 1;
     const endIdx = Math.min((currentPage + 1) * pageSize, total);
-    document.getElementById("pagination-info").textContent = `Showing ${records.length ? startIdx : 0}-${endIdx} of ${total}`;
+    document.getElementById("pagination-info").textContent = `Showing ${records.length ? startIdx : 0}-${endIdx} of ${total.toLocaleString()}`;
 
     document.getElementById("btn-prev-page").disabled = (currentPage === 0);
     document.getElementById("btn-next-page").disabled = (endIdx >= total);
 
     if (records.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 24px; color:var(--color-mute);">No records matching filter.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding: 24px; color:var(--color-mute);">No records matching filter.</td></tr>`;
       return;
     }
 
     tbody.innerHTML = "";
     records.forEach(rec => {
       const tr = document.createElement("tr");
-      
-      let flightMeta = {};
-      try {
-        flightMeta = JSON.parse(rec.flight || "{}");
-      } catch (e) {}
-
-      const flightStr = flightMeta.flight_no ? `${flightMeta.flight_no} (${flightMeta.origin}→${flightMeta.destination})` : "--";
-      const isInj = rec.type === "injection_candidates";
+      const meta = rec.pnr_metadata || {};
+      const pax = rec.passenger_context || {};
+      const isInj = rec.is_injection_candidate;
 
       tr.innerHTML = `
-        <td style="font-family:var(--font-mono); font-weight:700;">${rec.id}</td>
-        <td class="dialogue-cell" title="${escapeHtml(rec.dialogue)}">${escapeHtml(rec.dialogue)}</td>
-        <td style="font-size:13px;">${flightStr}</td>
-        <td style="text-transform:uppercase; font-size:12px; font-weight:700;">${rec.intent || "--"}</td>
+        <td style="font-family:var(--font-mono); font-weight:700;">${rec.pnr_number}</td>
+        <td>${meta.train_number} <span style="color:var(--color-mute); font-size:12px;">(${meta.class_of_travel})</span></td>
+        <td style="font-size:13px; font-family:var(--font-mono);">${escapeHtml(meta.source_station)} → ${escapeHtml(meta.destination_station)}</td>
+        <td><span style="font-weight:700; font-size:13px;">${meta.quota}</span></td>
+        <td style="font-size:12px;">${pax.age_group} / ${pax.special_consideration}</td>
+        <td style="font-size:12px;">${pax.booking_channel}</td>
         <td>
           <span class="type-tag ${isInj ? 'injection' : 'normal'}">
-            ${isInj ? 'INJECTION' : 'NORMAL'}
+            ${isInj ? 'ATTACK' : (pax.current_status || 'CONFIRMED')}
           </span>
         </td>
         <td>
-          <button class="btn-outline btn-sm test-row-btn" data-text="${escapeHtml(rec.dialogue)}" data-id="${rec.id}">
+          <button class="btn-outline btn-sm test-row-btn" data-pnr="${rec.pnr_number}" data-prompt="${escapeHtml(rec.evaluation_prompt)}">
             TEST
           </button>
         </td>
@@ -164,27 +155,24 @@ async function loadRecords() {
 
     tbody.querySelectorAll(".test-row-btn").forEach(btn => {
       btn.addEventListener("click", () => {
-        const text = btn.getAttribute("data-text");
+        const pnr = btn.getAttribute("data-pnr");
+        const prompt = btn.getAttribute("data-prompt");
         const promptInput = document.getElementById("prompt-input");
-        promptInput.value = text;
-        promptInput.dispatchEvent(new Event("input"));
+        promptInput.value = prompt;
+        document.getElementById("active-pnr-label").textContent = `PNR: ${pnr}`;
         document.getElementById("arena-workbench").scrollIntoView({ behavior: "smooth" });
-        runSingleBenchmark(btn.getAttribute("data-id"));
+        runSingleBenchmark(pnr);
       });
     });
 
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding: 24px; color:var(--color-error);">Error loading records: ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding: 24px; color:var(--color-error);">Error loading records: ${err.message}</td></tr>`;
   }
 }
 
-async function runSingleBenchmark(recordId = null) {
+async function runSingleBenchmark(pnrNumber = null) {
   const promptInput = document.getElementById("prompt-input");
   const text = promptInput.value.trim();
-  if (!text) {
-    alert("Please provide dialogue text or select a record to benchmark.");
-    return;
-  }
 
   const statusIndicator = document.getElementById("run-status-indicator");
   statusIndicator.textContent = "Executing concurrent evaluation (asyncio.gather)...";
@@ -198,11 +186,11 @@ async function runSingleBenchmark(recordId = null) {
 
   try {
     const payload = {
-      custom_text: text,
-      question_type: "all"
+      pnr_number: pnrNumber,
+      custom_prompt: text || undefined
     };
 
-    const res = await fetch("/api/benchmark/single", {
+    const res = await fetch("/api/railway/benchmark/single", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
@@ -211,9 +199,7 @@ async function runSingleBenchmark(recordId = null) {
     const clientEndTime = performance.now();
     const totalClientRttMs = Math.round(clientEndTime - clientStartTime);
 
-    if (!res.ok) {
-      throw new Error(`Server returned status ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`Server returned status ${res.status}`);
 
     const data = await res.json();
     statusIndicator.textContent = "Evaluation complete.";
@@ -238,41 +224,61 @@ function renderBenchmarkResults(data, clientRttMs) {
   document.getElementById("jev-rtt-lat").textContent = `${clientRttMs} ms`;
   document.getElementById("jev-raw-lat").textContent = `${jev.latency_ms || 0} ms`;
 
-  // Render Laya
+  // Render Laya Vectors
   if (laya.status === "ok") {
-    const isInj = laya.noul?.injection_detected;
-    const noulBadge = document.getElementById("laya-noul-badge");
-    noulBadge.className = `noul-status-badge ${isInj ? 'status-flagged' : 'status-safe'}`;
-    noulBadge.textContent = isInj ? "FLAGGED: PROMPT INJECTION" : "SAFE: RULE COMPLIANT";
-    document.getElementById("laya-noul-prob").textContent = `Prob: ${laya.noul?.probability}`;
+    // 1. Quota
+    const qComp = laya.quota_compliance?.compliant;
+    const qBadge = document.getElementById("laya-quota-badge");
+    qBadge.className = `noul-status-badge ${qComp ? 'status-safe' : 'status-flagged'}`;
+    qBadge.textContent = qComp ? "COMPLIANT: QUOTA ELIGIBLE" : "VIOLATION: DEMOGRAPHIC INELIGIBLE";
+    document.getElementById("laya-quota-prob").textContent = `Prob: ${laya.quota_compliance?.probability}`;
 
-    const intent = laya.choice?.intent || "--";
-    const conf = laya.choice?.confidence || 0;
-    document.getElementById("laya-intent-label").textContent = intent;
-    document.getElementById("laya-intent-bar").style.width = `${Math.round(conf * 100)}%`;
-    document.getElementById("laya-intent-conf").textContent = `${Math.round(conf * 100)}% (${conf})`;
+    // 2. Tatkal Risk
+    const tAction = laya.tatkal_risk?.action || "--";
+    const tConf = laya.tatkal_risk?.confidence || 0;
+    document.getElementById("laya-tatkal-label").textContent = tAction.toUpperCase();
+    document.getElementById("laya-tatkal-bar").style.width = `${Math.round(tConf * 100)}%`;
+    document.getElementById("laya-tatkal-conf").textContent = `${Math.round(tConf * 100)}% (${tConf})`;
+
+    // 3. Score
+    document.getElementById("laya-score-val").textContent = `${laya.confirmation_predictability?.score || '--'} / 10`;
+
+    // 4. Injection
+    const isInj = laya.injection_defense?.injection_detected;
+    const injVal = document.getElementById("laya-inj-val");
+    injVal.textContent = isInj ? "FLAGGED: ATTACK" : "CLEAN: SAFE";
+    injVal.style.color = isInj ? "var(--color-error)" : "#2b7000";
   } else {
-    // Fail-safe visual state (Rule 5)
     const errBox = document.getElementById("laya-error");
     errBox.textContent = `Laya Error: ${laya.error || "Execution failed"}`;
     errBox.style.display = "block";
   }
 
-  // Render Jev
+  // Render Jev Vectors
   if (jev.status === "ok") {
-    const isInj = jev.noul?.injection_detected;
-    const noulBadge = document.getElementById("jev-noul-badge");
-    noulBadge.className = `noul-status-badge ${isInj ? 'status-flagged' : 'status-safe'}`;
-    noulBadge.textContent = isInj ? "FLAGGED: PROMPT INJECTION" : "SAFE: RULE COMPLIANT";
-    document.getElementById("jev-noul-prob").textContent = `Prob: ${jev.noul?.probability}`;
+    // 1. Quota
+    const qComp = jev.quota_compliance?.compliant;
+    const qBadge = document.getElementById("jev-quota-badge");
+    qBadge.className = `noul-status-badge ${qComp ? 'status-safe' : 'status-flagged'}`;
+    qBadge.textContent = qComp ? "COMPLIANT: QUOTA ELIGIBLE" : "VIOLATION: DEMOGRAPHIC INELIGIBLE";
+    document.getElementById("jev-quota-prob").textContent = `Prob: ${jev.quota_compliance?.probability}`;
 
-    const intent = jev.choice?.intent || "--";
-    const conf = jev.choice?.confidence || 0;
-    document.getElementById("jev-intent-label").textContent = intent;
-    document.getElementById("jev-intent-bar").style.width = `${Math.round(conf * 100)}%`;
-    document.getElementById("jev-intent-conf").textContent = `${Math.round(conf * 100)}% (${conf})`;
+    // 2. Tatkal Risk
+    const tAction = jev.tatkal_risk?.action || "--";
+    const tConf = jev.tatkal_risk?.confidence || 0;
+    document.getElementById("jev-tatkal-label").textContent = tAction.toUpperCase();
+    document.getElementById("jev-tatkal-bar").style.width = `${Math.round(tConf * 100)}%`;
+    document.getElementById("jev-tatkal-conf").textContent = `${Math.round(tConf * 100)}% (${tConf})`;
+
+    // 3. Score
+    document.getElementById("jev-score-val").textContent = `${jev.confirmation_predictability?.score || '--'} / 10`;
+
+    // 4. Injection
+    const isInj = jev.injection_defense?.injection_detected;
+    const injVal = document.getElementById("jev-inj-val");
+    injVal.textContent = isInj ? "FLAGGED: ATTACK" : "CLEAN: SAFE";
+    injVal.style.color = isInj ? "var(--color-error)" : "#0046a4";
   } else {
-    // Fail-safe visual state (Rule 5)
     const errBox = document.getElementById("jev-error");
     errBox.textContent = `TypeSafe Jev Error: ${jev.error || "Execution failed"}`;
     errBox.style.display = "block";
@@ -293,11 +299,11 @@ function renderBenchmarkResults(data, clientRttMs) {
   if (data.consensus) {
     badge.className = "consensus-badge consensus-match";
     badge.textContent = "CONSENSUS AGREED (100%)";
-    desc.textContent = "Both Laya and Jev converged on identical guardrail status and intent routing.";
+    desc.textContent = "Both Laya and Jev converged on identical Quota compliance, Tatkal surge defense, and Injection detection.";
   } else {
     badge.className = "consensus-badge consensus-diverge";
     badge.textContent = "DIVERGENCE DETECTED";
-    desc.textContent = `Noul agreed: ${data.agreement_details?.noul_agrees} | Intent agreed: ${data.agreement_details?.choice_agrees}`;
+    desc.textContent = `Quota agreed: ${data.agreement_details?.quota_compliance_agrees} | Tatkal agreed: ${data.agreement_details?.tatkal_risk_agrees} | Injection agreed: ${data.agreement_details?.injection_defense_agrees}`;
   }
 }
 
@@ -307,16 +313,14 @@ function resetArenaResults() {
   document.getElementById("laya-rtt-lat").textContent = "-- ms";
   document.getElementById("jev-raw-lat").textContent = "-- ms";
   document.getElementById("jev-rtt-lat").textContent = "-- ms";
-  document.getElementById("laya-noul-badge").textContent = "--";
-  document.getElementById("laya-noul-badge").className = "noul-status-badge status-safe";
-  document.getElementById("jev-noul-badge").textContent = "--";
-  document.getElementById("jev-noul-badge").className = "noul-status-badge status-safe";
-  document.getElementById("laya-intent-label").textContent = "--";
-  document.getElementById("laya-intent-bar").style.width = "0%";
-  document.getElementById("jev-intent-label").textContent = "--";
-  document.getElementById("jev-intent-bar").style.width = "0%";
-  document.getElementById("laya-intent-conf").textContent = "--";
-  document.getElementById("jev-intent-conf").textContent = "--";
+  document.getElementById("laya-quota-badge").textContent = "--";
+  document.getElementById("jev-quota-badge").textContent = "--";
+  document.getElementById("laya-tatkal-label").textContent = "--";
+  document.getElementById("jev-tatkal-label").textContent = "--";
+  document.getElementById("laya-score-val").textContent = "--";
+  document.getElementById("jev-score-val").textContent = "--";
+  document.getElementById("laya-inj-val").textContent = "--";
+  document.getElementById("jev-inj-val").textContent = "--";
   document.getElementById("run-status-indicator").textContent = "Ready to execute";
 }
 
@@ -371,7 +375,7 @@ function setSkeletonState(active) {
   const fields = [
     "laya-p50", "laya-p95", "laya-p99", "laya-mean",
     "jev-p50", "jev-p95", "jev-p99", "jev-mean",
-    "batch-consensus-rate"
+    "batch-full-consensus", "batch-quota-consensus", "batch-tatkal-consensus"
   ];
   fields.forEach(id => {
     const el = document.getElementById(id);
@@ -388,8 +392,7 @@ function setSkeletonState(active) {
 
 function runBatchBenchmark(limit = null) {
   const scale = limit || selectedBatchScale || 50;
-  const filterSelect = document.getElementById("batch-filter-select");
-  const filterVal = filterSelect ? filterSelect.value : "all";
+  const quota = document.getElementById("batch-filter-quota").value;
 
   const submitBtn = document.getElementById("btn-run-batch-main");
   const spinner = document.getElementById("batch-btn-spinner");
@@ -398,7 +401,7 @@ function runBatchBenchmark(limit = null) {
   // 1. Button Transition
   if (submitBtn) submitBtn.disabled = true;
   if (spinner) spinner.style.display = "inline-block";
-  if (btnText) btnText.textContent = `Processing ${scale} Records in Parallel...`;
+  if (btnText) btnText.textContent = `Processing ${scale >= 1000 ? (scale/1000)+'k' : scale} Records in Parallel...`;
 
   // 2. Reset Victory Glows
   const cardLaya = document.getElementById("percentile-card-laya");
@@ -429,10 +432,10 @@ function runBatchBenchmark(limit = null) {
 
   document.getElementById("batch-section").scrollIntoView({ behavior: "smooth" });
 
-  appendHudLine(`[INFO] Initializing SSE telemetry stream for ${scale} records (Filter: ${filterVal})...`, "info");
+  appendHudLine(`[INFO] Initializing SSE telemetry stream for ${scale} railway transactions (Quota: ${quota})...`, "info");
 
   // 5. Connect SSE Stream
-  const sseUrl = `/api/benchmark/batch/stream?limit=${scale}&filter=${filterVal}&concurrency=5`;
+  const sseUrl = `/api/railway/benchmark/batch/stream?limit=${scale}&quota=${quota}&concurrency=5`;
   const eventSource = new EventSource(sseUrl);
 
   eventSource.onmessage = (e) => {
@@ -473,10 +476,9 @@ function runBatchBenchmark(limit = null) {
         animateNumber("jev-p99", jevDist.p99, 800, " ms");
         animateNumber("jev-mean", jevDist.mean, 700, " ms");
 
-        animateNumber("batch-consensus-rate", m.consensus_rate_percent, 900, "%");
-
-        document.getElementById("batch-stats-summary").textContent = 
-          `Completed ${m.total_evaluated} evaluations. Faster engine: ${m.faster_winner?.toUpperCase()} (Winner Reveal).`;
+        animateNumber("batch-full-consensus", m.full_consensus_rate_percent, 850, "%");
+        animateNumber("batch-quota-consensus", m.quota_consensus_rate_percent, 900, "%");
+        animateNumber("batch-tatkal-consensus", m.tatkal_risk_consensus_rate_percent, 950, "%");
 
         // Victory Glow & Reveal
         if (m.faster_winner === "laya") {
@@ -516,7 +518,7 @@ function runBatchBenchmark(limit = null) {
   };
 
   eventSource.onerror = (err) => {
-    appendHudLine("[WARN] Stream disconnected or completed.", "info");
+    appendHudLine("[WARN] Telemetry stream finished or disconnected.", "info");
     setSkeletonState(false);
     if (submitBtn) submitBtn.disabled = false;
     if (spinner) spinner.style.display = "none";
